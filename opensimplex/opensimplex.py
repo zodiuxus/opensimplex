@@ -5,21 +5,24 @@
 from .constants import *
 from math import floor
 from ctypes import c_int64
+import torch
 
-try:
-    from numba import njit, prange
-except ImportError:
-    prange = range
+# General changes:
+# removed the try-catch block
+# removed the @njit() calls before every function
+# changed NumPy.[method] to PyTorch.[method] - they use practically
+# the same functions and variables, at least to the extent of this module
 
-    def njit(*args, **kwargs):
-        def wrapper(func):
-            return func
-        return wrapper
-
+# Of course, for small-scale calculations, a CPU generator
+# (which is PT's default) is always more practical, and it can be always
+# changed using the generator = 'cuda' argument
 
 class OpenSimplex(object):
-    def __init__(self, seed=DEFAULT_SEED):
-        self._perm, self._perm_grad_index3 = _init(seed)
+    def __init__(self, seed=DEFAULT_SEED, generator = torch.default_generator):
+        self._perm, self._perm_grad_index3 = _init(seed, generator) 
+        # Added a PyTorch generator rather than relying on Numba and NumPy for
+        # parallelization, of which Numba doesn't support NumPy created arrays 
+        # which makes parallelizing it a nightmare
 
     def noise2(self, x, y):
         return _noise2(x, y, self._perm)
@@ -50,11 +53,14 @@ def overflow(x):
     return c_int64(x).value
 
 
-def _init(seed=DEFAULT_SEED):
+def _init(seed=DEFAULT_SEED, generator = torch.default_generator):
+    # Passing the generator and its device (N-core CPU and CUDA available)
+    device = generator.device
+
     # Have to zero fill so we can properly loop over it later
-    perm = np.zeros(256, dtype=np.int64)
-    perm_grad_index3 = np.zeros(256, dtype=np.int64)
-    source = np.arange(256)
+    perm = torch.zeros(256, dtype=torch.int64, device = device)
+    perm_grad_index3 = torch.zeros(256, dtype=torch.int64, device = device)
+    source = torch.arange(256)
     # Generates a proper permutation (i.e. doesn't merely perform N
     # successive pair swaps on a base array)
     seed = overflow(seed * 6364136223846793005 + 1442695040888963407)
@@ -71,14 +77,14 @@ def _init(seed=DEFAULT_SEED):
     return perm, perm_grad_index3
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def _extrapolate2(perm, xsb, ysb, dx, dy):
     index = perm[(perm[xsb & 0xFF] + ysb) & 0xFF] & 0x0E
     g1, g2 = GRADIENTS2[index:index + 2]
     return g1 * dx + g2 * dy
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def _extrapolate3(perm, perm_grad_index3, xsb, ysb, zsb, dx, dy, dz):
     index = perm_grad_index3[
         (perm[(perm[xsb & 0xFF] + ysb) & 0xFF] + zsb) & 0xFF
@@ -87,7 +93,7 @@ def _extrapolate3(perm, perm_grad_index3, xsb, ysb, zsb, dx, dy, dz):
     return g1 * dx + g2 * dy + g3 * dz
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def _extrapolate4(perm, xsb, ysb, zsb, wsb, dx, dy, dz, dw):
     index = perm[(
         perm[(
@@ -98,26 +104,26 @@ def _extrapolate4(perm, xsb, ysb, zsb, wsb, dx, dy, dz, dw):
     return g1 * dx + g2 * dy + g3 * dz + g4 * dw
 
 
-@njit(cache=True, parallel=True)
+# @njit(cache=True, parallel=True)
 def _noise2a(x, y, perm):
-    noise = np.zeros(x.size, dtype=np.double)
-    for i in prange(x.size):
+    noise = torch.zeros(x.size, dtype=torch.double)
+    for i in range(x.size):
         noise[i] = _noise2(x[i], y[i], perm)
     return noise
 
 
-@njit(cache=True, parallel=True)
+# @njit(cache=True, parallel=True)
 def _noise3a(x, y, z, perm, perm_grad_index3):
-    noise = np.zeros(x.size, dtype=np.double)
-    for i in prange(x.size):
+    noise = torch.zeros(x.size, dtype=torch.double)
+    for i in range(x.size):
         noise[i] = _noise3(x[i], y[i], z[i], perm, perm_grad_index3)
     return noise
 
 
-@njit(cache=True, parallel=True)
+# @njit(cache=True, parallel=True)
 def _noise4a(x, y, z, w, perm):
-    noise = np.zeros(x.size, dtype=np.double)
-    for i in prange(x.size):
+    noise = torch.zeros(x.size, dtype=torch.double)
+    for i in range(x.size):
         noise[i] = _noise4(x[i], y[i], z[i], w[i], perm)
     return noise
 
@@ -125,7 +131,7 @@ def _noise4a(x, y, z, w, perm):
 # There be dragons in the depths below..
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def _noise2(x, y, perm):
     # Place input coordinates onto grid.
     stretch_offset = (x + y) * STRETCH_CONSTANT2
@@ -226,7 +232,7 @@ def _noise2(x, y, perm):
     return value / NORM_CONSTANT2
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def _noise3(x, y, z, perm, perm_grad_index3):
     # Place input coordinates on simplectic honeycomb.
     stretch_offset = (x + y + z) * STRETCH_CONSTANT3
@@ -734,7 +740,7 @@ def _noise3(x, y, z, perm, perm_grad_index3):
     return value / NORM_CONSTANT3
 
 
-@njit(cache=True)
+# @njit(cache=True)
 def _noise4(x, y, z, w, perm):
     # Place input coordinates on simplectic honeycomb.
     stretch_offset = (x + y + z + w) * STRETCH_CONSTANT4
